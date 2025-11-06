@@ -1,3 +1,7 @@
+# prep-all-years.R----------------------------------------------------------------
+# prepare the data from multiple years (currently 2021-2024) into a single--------
+# shapefile with lat-long found using tidygeocoder--------------------------------
+# --------------------------------------------------------------------------------
 library(tidyverse)
 library(lubridate)
 library(sf)
@@ -23,6 +27,10 @@ retry_coords <- function(df, method, ...) {
     return(combined_df)
 }
 
+# assumes the tables are in folder 'comprehensive files'
+# TODO: ASSUMPTION: currently assumes any traps with zero mosquitoes are either 
+# a false for WNV, unless either `qk_total` or `Result` is marked with an "-", in which case
+# assume the trap was not visited / NA. We should check with Dallas Co about this.
 qk21 <- readxl::read_xlsx("comprehensive files/Comprehensive_WNV_DYS_tables_2021.xlsx", sheet="G") |> 
     transmute(
         date=as.Date(`Collected`),
@@ -93,6 +101,7 @@ qk24 <- readxl::read_xlsx("comprehensive files/Comprehensive_WNV_DYS_tables_2024
         )
     )
 
+# combine the dataframes and filter any final NAs
 traps0 <- bind_rows(qk21, qk22, qk23, qk24) |> 
     mutate(
         country="USA", 
@@ -100,13 +109,17 @@ traps0 <- bind_rows(qk21, qk22, qk23, qk24) |>
     ) |> 
     filter(!is.na(result), !is.na(num_trapped))
 
+# found that 'arcgis' had the most success and was able to find all coords in one go:
 traps_geo <- geocode(traps0, method="arcgis", street=address, city=city, postalcode=zip, country=country)
 
+# convert to 'sf' format
 traps_sf <- traps_geo |> 
     st_as_sf(coords=c("long", "lat"), crs="WGS84", remove=FALSE)
 
+# write as a shapefile
 write_sf(traps_sf, "traps-all-years.shp")
 
+## Some visualizations-------------------------------------------------------------
 library(zoo)
 
 traps_date <- traps_sf |> 

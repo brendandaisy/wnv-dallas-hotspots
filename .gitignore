@@ -1,3 +1,8 @@
+.DS_Store
+geofiles/
+figs/
+*.zip
+
 # History files
 .Rhistory
 .Rapp.history
