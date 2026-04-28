@@ -22,7 +22,10 @@ loc <- distinct(traps_sf, lat, long, geometry)
 wk <- seq(min(traps_sf$week_ind), max(traps_sf$week_ind), 1)
 
 ## define the temporal mesh
-wk_mesh <- fm_mesh_1d(wk, degree=1)
+# TODO no idea what a "good" choice for knots is, but a knot at every week
+# made the temporal range way to big. Overall, I don't really understand the
+# temporal behavior of the model very well yet
+wk_mesh <- fm_mesh_1d(seq(1, max(wk), 10), degree=1)
 wk_mesh
 
 ## define the spatial mesh
@@ -30,14 +33,18 @@ wk_mesh
 # which will bias the inferred field. at some point we should decrease the edge
 # lengths to make a finer mesh
 bnd <- st_as_sfc(st_bbox(loc), crs=st_crs(loc))
-loc_hex <- fm_hexagon_lattice(bnd, edge_len=0.05)
+loc_hex <- fm_hexagon_lattice(bnd, edge_len=0.07)
 
 sp_mesh <- fm_mesh_2d(
     loc_hex, boundary=bnd, 
-    max.edge=c(0.07, 0.1), 
+    max.edge=c(0.1, 0.1), 
     crs=fm_crs(loc)
 )
 
+# visually check the mesh looks reasonable, i.e.
+# 1) relatively "even" triangles
+# 2) decent amount of space around the boundries of the observation points
+# 3) triangles are "small enough"
 ggplot() +
     geom_fm(data=sp_mesh) +
     geom_sf(data=loc)
@@ -48,13 +55,13 @@ stm121 <- stModel.define(
     sp_mesh, wk_mesh, "121",
     control.priors = list(
         # set priors, if it matters
-        prs = c(0.2, 0.05),
-        prt = c(5, 0.05),
+        prs = c(1, 0.05),
+        prt = c(1, 0.05),
         psigma = c(1, 0.05)),
     constr = TRUE)
 
 # model formula: just a global intercept and the field
-model <- result ~ Intercept(1) + 
+model <- result ~ Intercept(1) +
     field(list(space=geometry, time=week_ind), model=stm121)
 
 # fit the model
@@ -62,7 +69,7 @@ fit <- bru(model, traps_sf, family="binomial")
 
 summary(fit)
 
-# make weekly predictions for a dense grid of points from 2024
+# make weekly prediction maps for (July 2024)
 pix_pred <- fm_pixels(sp_mesh, dims=c(150, 150), mask=bnd)
 wk_pred <- filter(traps_sf, month(date) == 7, year == 2024)$week_ind |> unique()
 pred_sf <- cross_join(pix_pred, tibble(week_ind=wk_pred))
@@ -87,8 +94,6 @@ post1 <- inla.tmarginal(\(x) exp(x), fit$internal.marginals.hyperpar[[1]]) |>
     as_tibble() |> 
     mutate(parameter="spatial range")
 
-# TODO: idk why tf the temporal range is so huge, but its causing bad predictions
-# during non-summer months, plus just makes no sense
 post2 <- inla.tmarginal(\(x) exp(x), fit$internal.marginals.hyperpar[[2]]) |> 
     as_tibble() |> 
     mutate(parameter="temporal range")

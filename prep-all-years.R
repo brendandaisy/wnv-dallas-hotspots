@@ -121,6 +121,7 @@ write_sf(traps_sf, "traps-all-years.shp")
 
 ## Some visualizations-------------------------------------------------------------
 library(zoo)
+library(ggpmisc)
 
 traps_date <- traps_sf |> 
     st_drop_geometry() |> 
@@ -140,3 +141,11 @@ traps_sf |>
     ggplot(aes(interaction(epiweek, year), n)) +
     geom_col() +
     theme_half_open()
+
+traps_sf |> 
+    group_by(date) |> 
+    reframe(abun_wk=sum(num_trapped), pos_wk=sum(result)) |> 
+    ggplot(aes(abun_wk, pos_wk)) +
+    geom_point() +
+    stat_poly_line() +
+    stat_poly_eq(use_label(c("adj.R2")), label.x=0.8) # Adds equation and R^2
