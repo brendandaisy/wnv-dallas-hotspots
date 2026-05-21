@@ -12,11 +12,14 @@ library(tidyterra)
 library(tidygeocoder)
 library(cowplot)
 
+source("geo-helpers.R")
+
 traps_sf <- read_sf("traps-all-years.shp") |> 
     rename(num_trapped=nm_trpp) |> 
     mutate(year=year(date), .after=epiweek) |> 
     group_by(year, epiweek) |> 
-    mutate(week_ind=cur_group_id())
+    mutate(week_ind=cur_group_id()) |> 
+    ungroup()
 
 loc <- distinct(traps_sf, lat, long, geometry)
 wk <- seq(min(traps_sf$week_ind), max(traps_sf$week_ind), 1)
@@ -49,32 +52,60 @@ ggplot() +
     geom_fm(data=sp_mesh) +
     geom_sf(data=loc)
 
-# define the spacetime model object
+## define the spacetime model object
 # model 121 aligns to the "critical diffusion" model (I think), a non-seperable process
-stm121 <- stModel.define(
+st_model <- stModel.define(
     sp_mesh, wk_mesh, "121",
     control.priors = list(
         # set priors, if it matters
-        prs = c(1, 0.05),
+        prs = c(0.1, 0.05),
         prt = c(1, 0.05),
         psigma = c(1, 0.05)),
     constr = TRUE)
 
+## example of adding a climate covariate
+bio13 <- rast("geofiles/bio13_equiv_2024.tiff") |> 
+    crop(st_bbox(loc), snap="out") |> 
+    project(traps_sf)
+
+plot(bio13)
+
+## adding land cover data
+lc_grid <- rast("geofiles/Annual_NLCD_LndCov_2024_CU_C1V1_mffklurgpwkbfm.tiff")
+
+# relabel to readable land cover names, dropping any that aren't anywhere in 
+# Dallas county:
+values(lc_grid) <- land_cover_labels(values(lc_grid), drop=TRUE)
+lc_grid <- project(lc_grid, traps_sf)
+
+plot(lc_grid)
+
 # model formula: just a global intercept and the field
-model <- result ~ Intercept(1) +
-    field(list(space=geometry, time=week_ind), model=stm121)
+model <- result ~ Intercept(1, prec.linear=0.5) +
+    prec_wet_mon(bio13, model="linear", prec.linear=1) +
+    land_cover(lc_grid, model="iid", hyper=list(theta=list(prior="pc.prec", param=c(1, 0.05)))) +
+    st_field(list(space=geometry, time=week_ind), model=st_model)
 
 # fit the model
 fit <- bru(model, traps_sf, family="binomial")
 
 summary(fit)
+plot(fit, "land_cover")
 
-# make weekly prediction maps for (July 2024)
-pix_pred <- fm_pixels(sp_mesh, dims=c(150, 150), mask=bnd)
-wk_pred <- filter(traps_sf, month(date) == 7, year == 2024)$week_ind |> unique()
+# make weekly prediction maps for selected time period
+pred_month <- 6
+pred_year <- 2021
+
+pix_pred <- fm_pixels(sp_mesh, dims=c(100, 100), mask=bnd)
+
+wk_pred <- filter(traps_sf, month(date) == pred_month, year == pred_year) |> 
+    pull(week_ind) |> 
+    unique()
+
 pred_sf <- cross_join(pix_pred, tibble(week_ind=wk_pred))
     
-pred <- predict(fit, pred_sf, ~inla.link.invlogit(field + Intercept), n.samples=1000)
+pred_formula <- ~inla.link.invlogit(Intercept+prec_wet_mon+land_cover+st_field)
+pred <- predict(fit, pred_sf, pred_formula, n.samples=1000)
 
 ggplot() +
     gg(pred, aes(fill=mean), geom="tile") +
@@ -82,14 +113,14 @@ ggplot() +
     geom_sf(aes(shape=as.factor(result)), filter(traps_sf, week_ind %in% wk_pred), col="gray70") +
     facet_wrap(~week_ind, nrow=2) +
     scale_fill_viridis_c(option="inferno") +
-    scale_shape_manual(values=c(1, 4)) +
+    scale_shape_manual(values=c(96, 4)) +
     labs(fill="prediction\nmean", shape="WNV positive") +
     theme_map()
 
 # save as png cause it looks better with SpatialPixels
-ggsave("figs/spacetime-fit-jul-24.png", width=7.2, height=4.8, bg="white")
+# ggsave("figs/spacetime-fit-jul-24.png", width=7.2, height=4.8, bg="white")
 
-#  examine posterior hyperparameters----------------------------------------------
+# examine posterior spatiotemporal hyperparameters--------------------------------
 post1 <- inla.tmarginal(\(x) exp(x), fit$internal.marginals.hyperpar[[1]]) |> 
     as_tibble() |> 
     mutate(parameter="spatial range")
@@ -107,3 +138,18 @@ bind_rows(post1, post2, post3) |>
     ggplot(aes(x, y, col=parameter)) +
     geom_line() +
     facet_wrap(~parameter, scales="free")
+
+# confirm unvisited land cover classes are predicted correctly (Bren TODO)--------
+# pred_lc <- pix_pred |> 
+#     mutate(land_cover=extract(lc_grid, pix_pred)[,2])
+# 
+# lc_classes_pred_grid <- unique(extract(lc_grid, pix_pred)[,2])
+# 
+# pred_lc <- predict(fit, tibble(land_cover=lc_classes_pred_grid), ~land_cover, n.samples=500)
+# 
+# pred_lc
+# 
+# ggplot(, aes(land_cover))
+# 
+# pred_lc |> 
+#     filter(`land_cover.ID` %in% unique(fit$summary.random$land_cover$ID))
