@@ -167,3 +167,59 @@ binary_scores <- function(p, y, p_ref) {
         auc         = auc(p, y)
     )
 }
+
+
+#Functions for adding bioclim
+get_raster_stack <- function(var, dates) {
+  
+  file_dates <- str_replace_all(dates, "-", "") |> str_sub(3,4) # only need year for now
+  pattern <- str_c(var, "_equiv_20",str_c(file_dates, collapse="|"),sep="")
+  files <- list.files("geofiles",  pattern=pattern, full.names=TRUE)
+  as.list(stack(files))
+}
+
+
+
+extract_raster_points <- function(r, date, points) {
+  rval1 <- terra::extract(r, points)
+  rval1$ID <- NULL
+  rvals <- as.double(unlist(rval1))
+  points |> 
+    st_as_sf() |> 
+    mutate(rvals=rvals, year=date)
+}
+
+load_prism_var <- function(var, dates, points) {
+  stack <- get_raster_stack(var, dates)
+  varname <- str_replace_all(var, "-", "_")
+  
+  furrr::future_map2_dfr(
+    stack, dates, 
+    extract_raster_points, points, 
+    .options=furrr_options(seed=NULL)
+  ) |> 
+    rename({{varname}} := rvals)
+}
+
+bioyears <- c(2024)
+
+add_bioclim_covariates <- function(biovars,bioyears,df){
+  loc <- distinct(df, geometry)
+for (bvar in biovars){
+  frame_bvar <- st_sf(
+    id = integer(0),
+    name = character(0),
+    value = numeric(0),
+    geometry = st_sfc(), 
+    crs = st_crs(loc) # Optional: Set your Coordinate Reference System
+  )
+  for (byear in bioyears){
+    oneyear <- load_prism_var(bvar,byear,loc)
+    oneyear$year <- as.double(oneyear$year)
+    frame_bvar <- rbind(frame_bvar,oneyear)
+  } 
+  
+  dfnew <- df %>%
+    left_join(st_drop_geometry(frame_bvar),by = c("lat","long","year"))}
+}
+
